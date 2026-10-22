@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MarketResult Form Builder</title>
+<style>
+  body { font-family: Segoe UI, Arial, sans-serif; margin: 20px; background: #f4f6f8; color: #222; }
+  h1 { margin-top: 0; }
+  fieldset { background: #fff; border: 1px solid #c8d0d8; border-radius: 6px; margin-bottom: 16px; }
+  legend { font-weight: 600; padding: 0 8px; }
+  label { display: inline-block; margin: 4px 12px 4px 0; font-size: 13px; }
+  input, select, textarea { padding: 4px 6px; border: 1px solid #aab; border-radius: 4px; font-family: inherit; }
+  input.num { width: 70px; }
+  textarea { width: 100%; box-sizing: border-box; height: 48px; font-family: Consolas, monospace; font-size: 12px; }
+  table { border-collapse: collapse; margin: 6px 0; }
+  td, th { border: 1px solid #d5dbe1; padding: 2px 4px; font-size: 12px; }
+  .card { border: 1px dashed #99a; border-radius: 6px; padding: 8px; margin: 8px 0; background: #fafbfc; }
+  .series { margin: 6px 0; }
+  .series .title { font-weight: 600; font-size: 13px; }
+  .fill { font-size: 12px; margin: 2px 0; }
+  .fill input { width: 55px; }
+  button { padding: 5px 12px; border: 0; border-radius: 4px; background: #1f6feb; color: #fff; cursor: pointer; margin: 2px; }
+  button.del { background: #c0392b; }
+  button.alt { background: #555; }
+  button.sm { padding: 2px 8px; font-size: 12px; }
+  pre { background: #111; color: #9f9; padding: 10px; max-height: 400px; overflow: auto; }
+  #fname { font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>MarketResult Form Builder</h1>
+
+<fieldset>
+  <legend>1. File header</legend>
+  <label>Auction <input id="auction" value="SI-SIDIDA1"></label>
+  <label>Auction name <input id="auctionName" value="PWR-SIDIDA1-D+1"></label>
+  <label>Auction date/time (UTC) <input id="auctionDt" type="datetime-local" value="2026-10-24T13:00"></label>
+  <label>Publication date/time (UTC) <input id="pubDt" type="datetime-local" value="2026-10-14T14:02:27" step="1"></label>
+  <label>Market <input id="market" value="SI-IDA1"></label>
+  <label>FX rates (optional text) <input id="fx" size="30"></label><br>
+  <label>Delivery start (UTC) <input id="delStart" type="datetime-local" value="2026-10-24T22:00"></label>
+  <label>Resolution (min) <input id="res" class="num" type="number" min="1" value="15"></label>
+  <label>Periods <input id="periods" class="num" type="number" min="1" max="400" value="100"></label>
+  <label>Currency <input id="cur" class="num" value="EUR"></label>
+  <label>File name timestamp (UTC) <input id="fileDt" type="datetime-local" value="2026-10-14T14:11:30" step="1"></label>
+  <div>File name: <span id="fname"></span></div>
+</fieldset>
+
+<fieldset>
+  <legend>2. Market series</legend>
+  <div id="marketSeries"></div>
+</fieldset>
+
+<fieldset>
+  <legend>3. Default blocks</legend>
+  <table id="dbTable"><tr><th>Block name</th><th>Price</th><th>Volume</th><th></th></tr></table>
+  <button type="button" onclick="addDefaultBlock()">+ Default block</button>
+</fieldset>
+
+<fieldset>
+  <legend>4. Bidding levels</legend>
+  <div id="levels"></div>
+  <button type="button" onclick="addLevel()">+ Bidding level</button>
+</fieldset>
+
+<fieldset>
+  <legend>5. Portfolios (linear orders and block orders)</legend>
+  <div id="portfolios"></div>
+  <button type="button" onclick="addPortfolio()">+ Portfolio</button>
+</fieldset>
+
+<button type="button" onclick="generate()">Generate CSV</button>
+<button type="button" class="alt" onclick="download()">Download</button>
+<pre id="out"></pre>
+
+<script>
+const $ = id => document.getElementById(id);
+const nP = () => Math.max(1, +$('periods').value || 1);
+const stamp = v => v.replace(/[-:T]/g, '').slice(0, 14).padEnd(14, '0');
+const isoZ = v => v ? (v.length === 16 ? v + ':00Z' : v + 'Z') : '';
+let idCounter = 700000002520000;
+const nextId = () => ++idCounter;
+
+function periodTimes() {
+  const start = new Date($('delStart').value + ':00Z');
+  const step = (+$('res').value || 15) * 60000;
+  return Array.from({length: nP()}, (_, i) => new Date(start.getTime() + i * step).toISOString().slice(0, 19) + 'Z');
+}
+
+function updateName() {
+  $('fname').textContent = `MarketResult_${$('auction').value}_${$('auctionName').value}_${stamp($('auctionDt').value)}_${stamp($('fileDt').value)}.csv`;
+}
+['auction', 'auctionName', 'auctionDt', 'fileDt'].forEach(i => $(i).addEventListener('input', updateName));
+
+// Series widget: textarea of values separated by ; , whitespace or newlines (use "." or "," as decimal) plus a range filler
+function seriesHtml(title, cls, def) {
+  return `<div class="series ${cls}"><span class="title">${title}</span>
+    <div class="fill">Fill periods from <input class="f1" type="number" min="1" value="1"> to <input class="f2" type="number" min="1" value="${nP()}">
+    with <input class="fv" value="${def}"> <button type="button" class="sm alt" onclick="fillSeries(this)">Fill</button>
+    <button type="button" class="sm alt" onclick="clearSeries(this)">Reset all to 0</button></div>
+    <textarea class="vals" placeholder="values separated by ; (one per period)"></textarea></div>`;
+}
+
+function getVals(el) {
+  const arr = el.querySelector('.vals').value.split(/[;\s]+/).filter(s => s !== '').map(s => s.replace('.', ','));
+  while (arr.length < nP()) arr.push('0');
+  return arr.slice(0, nP());
+}
+function setVals(el, arr) { el.querySelector('.vals').value = arr.join(';'); }
+
+function fillSeries(btn) {
+  const el = btn.closest('.series');
+  const arr = getVals(el);
+  const a = Math.max(1, +el.querySelector('.f1').value), b = Math.min(nP(), +el.querySelector('.f2').value);
+  for (let i = a - 1; i < b; i++) arr[i] = el.querySelector('.fv').value;
+  setVals(el, arr);
+}
+function clearSeries(btn) {
+  const el = btn.closest('.series');
+  setVals(el, Array(nP()).fill('0'));
+}
+function initSeries(el, v = '0') { setVals(el, Array(nP()).fill(v)); }
+
+function addSeriesBox(parent, title, cls, def = '0') {
+  parent.insertAdjacentHTML('beforeend', seriesHtml(title, cls, def));
+  initSeries(parent.lastElementChild, def);
+}
+
+function addDefaultBlock(v = {}) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td><input class="n" value="${v.n || ''}"></td><td><input class="p num" value="${v.p || ''}"></td><td><input class="v num" value="${v.v || ''}"></td>
+    <td><button type="button" class="del sm" onclick="this.closest('tr').remove()">x</button></td>`;
+  $('dbTable').appendChild(tr);
+}
+
+function addLevel(name = '') {
+  const d = document.createElement('div');
+  d.className = 'card level';
+  d.innerHTML = `<label>Bidding level <input class="n" value="${name}"></label>
+    <button type="button" class="del" onclick="this.closest('.level').remove()">Remove</button>
+    <div class="ss"></div>`;
+  $('levels').appendChild(d);
+  const ss = d.querySelector('.ss');
+  addSeriesBox(ss, 'Net position', 'net');
+  addSeriesBox(ss, 'Imbalance', 'imb');
+}
+
+function addPortfolio(v = {}) {
+  const d = document.createElement('div');
+  d.className = 'card pf';
+  d.innerHTML = `<label>Member <input class="m" value="${v.m || ''}"></label>
+    <label>Portfolio <input class="p" value="${v.p || ''}"></label>
+    <label>Resolution <input class="r num" value="15"></label>
+    <label>Currency <input class="c num" value="EUR"></label>
+    <label>Flag <input class="f num" value="N"></label>
+    <button type="button" class="del" onclick="this.closest('.pf').remove()">Remove portfolio</button><br>
+    <button type="button" class="alt" onclick="addLinear(this.closest('.pf'))">+ Linear order</button>
+    <button type="button" class="alt" onclick="addBlock(this.closest('.pf'))">+ Block order</button>
+    <div class="orders"></div>`;
+  $('portfolios').appendChild(d);
+  return d;
+}
+
+function addLinear(pf, name = '') {
+  const d = document.createElement('div');
+  d.className = 'card order linear';
+  d.innerHTML = `<b>Linear order</b> <label>Name <input class="n" value="${name}"></label>
+    <button type="button" class="del sm" onclick="this.closest('.order').remove()">x</button><div class="ss"></div>`;
+  pf.querySelector('.orders').appendChild(d);
+  addSeriesBox(d.querySelector('.ss'), 'Volumes (MW)', 'vol');
+  return d;
+}
+
+function addBlock(pf, user = 'EPEXSPOT-U01') {
+  const d = document.createElement('div');
+  d.className = 'card order block';
+  d.innerHTML = `<b>Block order</b> <label>Order ID <input class="id" value="${nextBlockId()}" size="18"></label>
+    <label>User <input class="u" value="${user}"></label>
+    <button type="button" class="del sm" onclick="this.closest('.order').remove()">x</button><div class="ss"></div>`;
+  pf.querySelector('.orders').appendChild(d);
+  addSeriesBox(d.querySelector('.ss'), 'Volumes (MW)', 'vol');
+  return d;
+}
+let blockCounter = 700000000007833;
+const nextBlockId = () => ++blockCounter;
+
+function line(a) { return a.join(';'); }
+
+function generate() {
+  const L = [], n = nP(), times = periodTimes(), res = $('res').value, cur = $('cur').value;
+  const ts = times.join(';');
+  L.push(`Auction;${$('auction').value}`, `Auction name;${$('auctionName').value}`,
+    `Auction date time;${isoZ($('auctionDt').value)}`, `Publication date time;${isoZ($('pubDt').value)}`,
+    $('fx').value ? `FX rates;${$('fx').value}` : 'FX rates', `Market;${$('market').value}`);
+
+  const ms = $('marketSeries');
+  L.push(`Index prices;${res};${cur}`, ts, getVals(ms.querySelector('.ip')).join(';'));
+  L.push(`Index volumes;${res}`, ts, getVals(ms.querySelector('.iv')).join(';'));
+  L.push(`Net position;${res}`, ts, getVals(ms.querySelector('.np')).join(';'));
+
+  const rows = [...document.querySelectorAll('#dbTable tr:not(:first-child)')];
+  if (rows.length) {
+    const g = c => rows.map(r => r.querySelector(c).value.replace('.', ','));
+    L.push(`Default blocks;${res};${cur}`, line(['Block name', ...g('.n')]), line(['Block price', ...g('.p')]), line(['Block volume', ...g('.v')]));
+  }
+
+  document.querySelectorAll('.level').forEach(lv => {
+    L.push(`Bidding level;${lv.querySelector('.n').value}`);
+    L.push(`Net position;${res}`, ts, getVals(lv.querySelector('.net')).join(';'));
+    L.push(`Imbalance;${res}`, ts, getVals(lv.querySelector('.imb')).join(';'));
+  });
+
+  document.querySelectorAll('.pf').forEach(pf => {
+    const g = c => pf.querySelector(c).value;
+    L.push(line(['Portfolio', g('.m'), g('.p'), g('.r'), g('.c'), g('.f')]));
+    pf.querySelectorAll('.order').forEach(o => {
+      const vals = getVals(o.querySelector('.vol'));
+      const ids = vals.map(v => (parseFloat(v.replace(',', '.')) || 0) !== 0 ? nextId() : '').join(';');
+      if (o.classList.contains('linear')) L.push(`Linear order;${o.querySelector('.n').value}`);
+      else L.push(`Block order;${o.querySelector('.id').value};${o.querySelector('.u').value}`);
+      L.push(ts, vals.join(';'), ids, ids);
+    });
+  });
+
+  $('out').textContent = L.join('\r\n');
+  return L.join('\r\n');
+}
+
+function download() {
+  const blob = new Blob([generate() + '\r\n'], {type: 'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = $('fname').textContent;
+  a.click();
+}
+
+function init() {
+  updateName();
+  const ms = $('marketSeries');
+  addSeriesBox(ms, 'Index prices', 'ip', '13,87');
+  addSeriesBox(ms, 'Index volumes', 'iv', '1,4');
+  addSeriesBox(ms, 'Net position', 'np', '0');
+  [['Baseload', '13,53', '983,2'], ['Peakload', '13,45', '814,4'], ['Off-peak 1', '13,39', '59,2'],
+   ['Off-peak 2', '13,91', '109,6'], ['Off-peak', '13,59', '168,8'], ['Sun peak', '13,49', '752,0']]
+    .forEach(([n, p, v]) => addDefaultBlock({n, p, v}));
+  addLevel('SI-ELES-IDA1');
+  const pf = addPortfolio({m: 'ENOS', p: 'ENOS-TB01'});
+  addLinear(pf, 'SDAOUD');
+  const b = addBlock(pf);
+  const arr = Array(nP()).fill('0'); for (let i = 0; i < 4; i++) arr[i] = '-1,4';
+  setVals(b.querySelector('.vol'), arr);
+}
+
+// Keep series lengths in sync when the period count changes
+$('periods').addEventListener('change', () => document.querySelectorAll('.series').forEach(s => setVals(s, getVals(s))));
+init();
+</script>
+</body>
+</html>
