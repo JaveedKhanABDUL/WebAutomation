@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BidFile (SI-SIDIDA) Form Builder</title>
+<style>
+  body { font-family: Segoe UI, Arial, sans-serif; margin: 20px; background: #f4f6f8; color: #222; }
+  h1 { margin-top: 0; }
+  fieldset { background: #fff; border: 1px solid #c8d0d8; border-radius: 6px; margin-bottom: 16px; }
+  legend { font-weight: 600; padding: 0 8px; }
+  label { display: inline-block; margin: 4px 12px 4px 0; font-size: 13px; }
+  input, select, textarea { padding: 4px 6px; border: 1px solid #aab; border-radius: 4px; font-family: inherit; }
+  input.num { width: 70px; }
+  textarea { width: 100%; box-sizing: border-box; height: 48px; font-family: Consolas, monospace; font-size: 12px; }
+  table { border-collapse: collapse; margin: 6px 0; }
+  td, th { border: 1px solid #d5dbe1; padding: 2px 4px; font-size: 12px; }
+  .card { border: 1px dashed #99a; border-radius: 6px; padding: 8px; margin: 8px 0; background: #fafbfc; }
+  .series .title { font-weight: 600; font-size: 13px; }
+  .fill { font-size: 12px; margin: 2px 0; }
+  .fill input { width: 55px; }
+  button { padding: 5px 12px; border: 0; border-radius: 4px; background: #1f6feb; color: #fff; cursor: pointer; margin: 2px; }
+  button.del { background: #c0392b; }
+  button.alt { background: #555; }
+  button.sm { padding: 2px 8px; font-size: 12px; }
+  pre { background: #111; color: #9f9; padding: 10px; max-height: 400px; overflow: auto; }
+  #fname { font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>BidFile Form Builder (SI-SIDIDA layout)</h1>
+
+<fieldset>
+  <legend>1. File header</legend>
+  <label>Auction <input id="auction" value="SI-SIDIDA1"></label>
+  <label>Auction name <input id="auctionName" value="PWR-SIDIDA1-D+1"></label>
+  <label>Auction date/time (UTC) <input id="auctionDt" type="datetime-local" value="2026-10-24T13:00"></label>
+  <label>File name timestamp (UTC) <input id="fileDt" type="datetime-local" value="2026-10-14T14:11:28" step="1"></label><br>
+  <label>Delivery start (UTC) <input id="delStart" type="datetime-local" value="2026-10-24T22:00"></label>
+  <label>Resolution (min) <input id="res" class="num" type="number" min="1" value="15"></label>
+  <label>Periods <input id="periods" class="num" type="number" min="1" max="400" value="100"></label>
+  <label><input type="checkbox" id="quoteKeys"> Quote header keys ("Auction name") as in the sample</label>
+  <div>File name: <span id="fname"></span></div>
+</fieldset>
+
+<fieldset>
+  <legend>2. Portfolios (PO) with their orders</legend>
+  <div id="portfolios"></div>
+  <button type="button" onclick="addPortfolio()">+ Portfolio</button>
+</fieldset>
+
+<button type="button" onclick="generate()">Generate CSV</button>
+<button type="button" class="alt" onclick="download()">Download</button>
+<pre id="out"></pre>
+
+<script>
+const $ = id => document.getElementById(id);
+const nP = () => Math.max(1, +$('periods').value || 1);
+const stamp = v => v.replace(/[-:T]/g, '').slice(0, 14).padEnd(14, '0');
+const isoZ = v => v ? (v.length === 16 ? v + ':00Z' : v + 'Z') : '';
+const dec = v => String(v == null ? '' : v).trim().replace('.', ',');
+const num = v => parseFloat(String(v).replace(',', '.')) || 0;
+let idCounter = 700000002520000, blockCounter = 700000000007833, slCounter = 700000000007995;
+const nextId = () => ++idCounter;
+
+function periodTimes() {
+  const start = new Date($('delStart').value + ':00Z');
+  const step = (+$('res').value || 15) * 60000;
+  return Array.from({length: nP()}, (_, i) => new Date(start.getTime() + i * step).toISOString().slice(0, 19) + 'Z');
+}
+
+function updateName() {
+  $('fname').textContent = `BidFile_${$('auction').value}_${$('auctionName').value}_${stamp($('auctionDt').value)}_${stamp($('fileDt').value)}.csv`;
+}
+['auction', 'auctionName', 'auctionDt', 'fileDt'].forEach(i => $(i).addEventListener('input', updateName));
+
+function getVals(el) {
+  const arr = el.querySelector('.vals').value.split(/[;\s]+/).filter(s => s !== '').map(dec);
+  while (arr.length < nP()) arr.push('');
+  return arr.slice(0, nP());
+}
+function setVals(el, arr) { el.querySelector('.vals').value = arr.join(';'); }
+
+function seriesHtml(title) {
+  return `<div class="series"><span class="title">${title}</span>
+    <div class="fill">Fill periods from <input class="f1" type="number" min="1" value="1"> to <input class="f2" type="number" min="1" value="4">
+    with <input class="fv" value="-1,4"> <button type="button" class="sm alt" onclick="fillSeries(this)">Fill</button>
+    <button type="button" class="sm alt" onclick="setVals(this.closest('.series'), Array(nP()).fill(''))">Clear</button></div>
+    <textarea class="vals" placeholder="values separated by ; (empty = no volume in that period)"></textarea></div>`;
+}
+function fillSeries(btn) {
+  const el = btn.closest('.series'), arr = getVals(el);
+  const a = Math.max(1, +el.querySelector('.f1').value), b = Math.min(nP(), +el.querySelector('.f2').value);
+  for (let i = a - 1; i < b; i++) arr[i] = dec(el.querySelector('.fv').value);
+  setVals(el, arr);
+}
+
+function addPortfolio(v = {}) {
+  const d = document.createElement('div');
+  d.className = 'card pf';
+  d.innerHTML = `<label>Member <input class="m" value="${v.m || ''}"></label>
+    <label>Portfolio <input class="p" value="${v.p || ''}"></label>
+    <label>Bidding level <input class="bl" value="${v.bl || 'SI-ELES-IDA1'}"></label>
+    <label>Resolution <input class="r num" value="15"></label><label>Currency <input class="c num" value="EUR"></label>
+    <label>Flag <input class="f num" value="N"></label>
+    <button type="button" class="del" onclick="this.closest('.pf').remove()">Remove portfolio</button><br>
+    <button type="button" class="alt" onclick="addLinear(this.closest('.pf'))">+ Linear order (SL/PR/VL)</button>
+    <button type="button" class="alt" onclick="addBlockSub(this.closest('.pf'))">+ Block submission (SB/BI/BL)</button>
+    <div class="orders"></div>`;
+  $('portfolios').appendChild(d);
+  return d;
+}
+
+function addLinear(pf) {
+  const d = document.createElement('div');
+  d.className = 'card linear';
+  d.innerHTML = `<b>Linear order</b>
+    <label>Order ID <input class="id" size="18" value="${++slCounter}"></label>
+    <label>User <input class="u" value="SDAOUD"></label><label>Member <input class="m" value="EPEXSPOT"></label>
+    <label>Submitted (UTC) <input class="t" type="datetime-local" step="1" value="2026-10-05T08:59:27"></label>
+    <button type="button" class="del sm" onclick="this.closest('.linear').remove()">x</button><br>
+    <label>Price points <input class="prices" size="40" value="-9999, 9999"></label>
+    <label>Paradoxically <select class="par"><option>No</option><option>Yes</option></select></label>
+    <button type="button" class="alt sm" onclick="addVL(this.closest('.linear'))">+ Period row (VL)</button>
+    <table class="vlt"><tr><th>Period (UTC)</th><th>Active</th><th>Execution</th><th>Volumes (one per price point, ; separated)</th><th></th></tr></table>`;
+  pf.querySelector('.orders').appendChild(d);
+  addVL(d, {t: $('delStart').value, e: '1', v: '1;1'});
+  return d;
+}
+
+function addVL(card, v = {}) {
+  const tr = document.createElement('tr');
+  tr.className = 'vl';
+  tr.innerHTML = `<td><input class="t" type="datetime-local" value="${v.t || $('delStart').value}"></td>
+    <td><select class="a"><option>Y</option><option>N</option></select></td>
+    <td><input class="e num" value="${v.e || '0'}"></td><td><input class="v" size="40" value="${v.v || ''}"></td>
+    <td><button type="button" class="del sm" onclick="this.closest('tr').remove()">x</button></td>`;
+  card.querySelector('.vlt').appendChild(tr);
+}
+
+function addBlockSub(pf) {
+  const d = document.createElement('div');
+  d.className = 'card sub';
+  d.innerHTML = `<b>Block submission</b> <label>User <input class="u" value="EPEXSPOT-U01"></label>
+    <label>Member <input class="m" value="EPEXSPOT"></label>
+    <label>Submitted (UTC) <input class="t" type="datetime-local" step="1" value="2026-10-05T08:56:33"></label>
+    <button type="button" class="alt sm" onclick="addBlock(this.closest('.sub'))">+ Block</button>
+    <button type="button" class="del sm" onclick="this.closest('.sub').remove()">Remove submission</button>
+    <div class="blocks"></div>`;
+  pf.querySelector('.orders').appendChild(d);
+  addBlock(d);
+  return d;
+}
+
+function addBlock(sub) {
+  const d = document.createElement('div');
+  d.className = 'card block';
+  d.innerHTML = `<label>Block ID <input class="id" size="18" value="${++blockCounter}"></label>
+    <label>Active <select class="a"><option>Y</option><option>N</option></select></label>
+    <label>Execution <input class="ex num" value=""></label>
+    <label><input type="checkbox" class="auto" checked> Execution = sum of volumes</label>
+    <label>MAR <input class="mar num" value="1"></label><label>AAR <input class="aar num" value="1"></label>
+    <label>Code <input class="code num" value="C01"></label><label>Code PRM <input class="prm num"></label>
+    <label>Paradoxically <select class="par"><option>No</option><option>Yes</option></select></label>
+    <label>Price <input class="price num" value="1"></label>
+    <button type="button" class="del sm" onclick="this.closest('.block').remove()">x</button>
+    ${seriesHtml('Volumes (MW)')}`;
+  sub.querySelector('.blocks').appendChild(d);
+  setVals(d.querySelector('.series'), Array(nP()).fill(''));
+  return d;
+}
+
+$('periods').addEventListener('change', () => document.querySelectorAll('.series').forEach(s => setVals(s, getVals(s))));
+
+function generate() {
+  const L = [], times = periodTimes(), n = times.length;
+  const q = $('quoteKeys').checked ? s => `"${s}"` : s => s;
+  L.push(`Auction;${$('auction').value}`, `${q('Auction name')};${$('auctionName').value}`, `${q('Auction date time')};${isoZ($('auctionDt').value)}`);
+
+  document.querySelectorAll('.pf').forEach(pf => {
+    const g = c => pf.querySelector(c).value;
+    L.push(['PO', g('.m'), g('.p'), g('.bl'), g('.r'), g('.c'), g('.f')].join(';'));
+
+    pf.querySelectorAll('.linear').forEach(o => {
+      const gv = c => o.querySelector(c).value;
+      const prices = gv('.prices').split(',').map(s => dec(s)).filter(Boolean);
+      L.push(['SL', gv('.id'), gv('.u'), gv('.m'), isoZ(gv('.t'))].join(';'));
+      L.push(['PR', 'Period', 'OrderPeriodID', 'Active', 'Paradoxically', 'Execution', ...prices].join(';'));
+      o.querySelectorAll('.vl').forEach(r => {
+        const vols = r.querySelector('.v').value.split(/[;\s]+/).filter(Boolean).map(dec);
+        L.push(['VL', isoZ(r.querySelector('.t').value), nextId(), r.querySelector('.a').value, gv('.par'), dec(r.querySelector('.e').value), ...vols].join(';'));
+      });
+    });
+
+    pf.querySelectorAll('.sub').forEach(sub => {
+      const gs = c => sub.querySelector(c).value;
+      L.push(['SB', gs('.u'), gs('.m'), isoZ(gs('.t'))].join(';'));
+      L.push(['BI', 'BlockID', 'Active', 'Execution', 'MAR', 'AAR', 'BlockCode', 'BlockCodePRM', 'Paradoxically', 'Price', ...times, ...times].join(';'));
+      sub.querySelectorAll('.block').forEach(b => {
+        const gb = c => b.querySelector(c).value;
+        const vols = getVals(b.querySelector('.series'));
+        const ids = vols.map(v => v !== '' && num(v) !== 0 ? nextId() : '');
+        const exec = b.querySelector('.auto').checked
+          ? String(vols.reduce((s, v) => s + num(v), 0)).replace('.', ',') : dec(gb('.ex'));
+        L.push(['BL', gb('.id'), gb('.a'), exec, dec(gb('.mar')), gb('.aar'), gb('.code'), gb('.prm'), gb('.par'), dec(gb('.price')), ...vols, ...ids].join(';'));
+      });
+    });
+  });
+
+  $('out').textContent = L.join('\r\n');
+  return L.join('\r\n');
+}
+
+function download() {
+  const blob = new Blob([generate() + '\r\n'], {type: 'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = $('fname').textContent;
+  a.click();
+}
+
+updateName();
+const pf = addPortfolio({m: 'ENOS', p: 'ENOS-TB01'});
+addLinear(pf);
+const sub = addBlockSub(pf);
+setVals(sub.querySelector('.series'), Array.from({length: nP()}, (_, i) => i < 4 ? '-1,4' : ''));
+</script>
+</body>
+</html>
