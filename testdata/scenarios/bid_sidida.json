@@ -1,0 +1,28 @@
+{
+  "fileType": "bid_sidida",
+  "periods": {"start": "2026-10-24T22:00:00Z", "resolution": 15, "count": 100},
+  "header": {"auction": "SI-SIDIDA1", "auctionName": "PWR-SIDIDA1-D+1", "auctionDt": "2026-10-24T13:00:00Z",
+             "generatedDt": "2026-10-14T14:11:28Z", "quoteKeys": true},
+  "portfolios": [
+    {
+      "member": "ENOS", "portfolio": "ENOS-TB01", "biddingLevel": "SI-ELES-IDA1", "resolution": 15, "currency": "EUR", "flag": "N",
+      "linearOrders": [
+        {"id": 700000000007996, "user": "SDAOUD", "member": "EPEXSPOT", "submitted": "2026-10-05T08:59:27Z",
+         "prices": [-9999, 9999], "paradoxically": "No",
+         "rows": [
+           {"period": "2026-10-24T22:00:00Z", "active": "Y", "execution": 1, "volumes": [1, 1]},
+           {"period": "2026-10-25T22:45:00Z", "active": "Y", "execution": 11, "volumes": [11, 11]}
+         ]}
+      ],
+      "blockSubmissions": [
+        {"user": "EPEXSPOT-U01", "member": "EPEXSPOT", "submitted": "2026-10-05T08:56:33Z",
+         "blocks": [
+           {"id": 700000000007834, "active": "Y", "execution": "", "mar": 1, "aar": 1, "code": "C01", "paradoxically": "No", "price": 1,
+            "volumes": {"default": "", "ranges": [{"from": 1, "to": 4, "value": -1.4}]}},
+           {"id": 700000000007835, "active": "Y", "execution": "", "mar": 1, "aar": 1, "code": "C01", "paradoxically": "No", "price": 1,
+            "volumes": {"default": "", "ranges": [{"from": 5, "to": 8, "value": -1.4}]}}
+         ]}
+      ]
+    }
+  ]
+}

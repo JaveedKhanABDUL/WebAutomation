@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Test Data Builder (BidFile / MarketResult)</title>
+<style>
+  body { font-family: Segoe UI, Arial, sans-serif; margin: 20px; background: #f4f6f8; color: #222; }
+  h1 { margin-top: 0; }
+  .bar { background: #fff; border: 1px solid #c8d0d8; border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; }
+  .card { background: #fff; border: 1px solid #c8d0d8; border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+  .card .card { background: #fafbfc; border-style: dashed; }
+  .title { font-weight: 600; }
+  label { display: inline-block; margin: 3px 12px 3px 0; font-size: 13px; }
+  label > span { color: #456; margin-right: 4px; }
+  input, select, textarea { padding: 3px 6px; border: 1px solid #aab; border-radius: 4px; font-family: inherit; }
+  textarea { width: 100%; box-sizing: border-box; height: 48px; font-family: Consolas, monospace; font-size: 12px; }
+  button { padding: 5px 12px; border: 0; border-radius: 4px; background: #1f6feb; color: #fff; cursor: pointer; margin: 2px; }
+  button.alt { background: #555; }
+  button.del { background: #c0392b; padding: 2px 8px; }
+  .fill { font-size: 12px; margin: 2px 0; }
+  .fill input { width: 55px; }
+  pre { background: #111; color: #9f9; padding: 10px; max-height: 400px; overflow: auto; }
+  #fname { font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>Test Data Builder</h1>
+
+<div class="bar">
+  <label><span>File type</span>
+    <select id="fileType">
+      <option value="bid_nordic">BidFile - NORDIC (MRC)</option>
+      <option value="bid_sidida">BidFile - SI-SIDIDA</option>
+      <option value="market_result">MarketResult</option>
+    </select></label>
+  <button type="button" class="alt" onclick="loadSample()">Load sample</button>
+  <button type="button" class="alt" onclick="$('loadFile').click()">Load scenario JSON</button>
+  <input id="loadFile" type="file" accept=".json" style="display:none">
+  <button type="button" class="alt" onclick="saveScenario()">Save scenario JSON</button>
+  <div>Scenario files work with <code>python testdata/generator.py scenario.json -o outdir</code>.</div>
+</div>
+
+<div id="form"></div>
+
+<div class="bar">
+  <button type="button" onclick="generate()">Generate CSV</button>
+  <button type="button" onclick="downloadCsv()">Download CSV</button>
+  <span id="fname"></span>
+</div>
+<pre id="out"></pre>
+
+<script>
+const $ = id => document.getElementById(id);
+
+/* ========================= emitters (mirror of generator.py) ========================= */
+function fmt(v) {
+  if (v === null || v === undefined) return '';
+  return String(v).trim().replace('.', ',');
+}
+function num(v) { const x = parseFloat(String(v).replace(',', '.')); return isNaN(x) ? 0 : x; }
+function fmtNum(x) {
+  let s = (Math.round(x * 1e6) / 1e6).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+  return s === '' || s === '-0' ? '0' : s.replace('.', ',');
+}
+const stamp = iso => iso.replace(/[-:TZ]/g, '').slice(0, 14).padEnd(14, '0');
+const parseUtc = iso => new Date(iso.replace(/Z$/, '') + 'Z');
+const isoZ = iso => iso ? parseUtc(iso).toISOString().slice(0, 19) + 'Z' : '';
+function periodTimes(p) {
+  const start = parseUtc(p.start), step = (+p.resolution || 15) * 60000;
+  return Array.from({length: +p.count}, (_, i) => new Date(start.getTime() + i * step).toISOString().slice(0, 19) + 'Z');
+}
+function expandSeries(v, n, pad = '') {
+  let arr;
+  if (v && !Array.isArray(v) && typeof v === 'object') {
+    arr = Array(n).fill(fmt(v.default !== undefined ? v.default : pad));
+    (v.ranges || []).forEach(r => { for (let i = Math.max(1, +r.from) - 1; i < Math.min(n, +r.to); i++) arr[i] = fmt(r.value); });
+  } else arr = (v || []).map(fmt);
+  while (arr.length < n) arr.push(pad);
+  return arr.slice(0, n);
+}
+const mkIds = start => { let n = start; return () => String(++n); };
+const presenceIds = (vols, next) => vols.map(v => (v !== '' && num(v) !== 0) ? next() : '');
+const isEmpty = v => v === undefined || v === null || v === '';
+const or = (v, d) => v === undefined ? d : v;
+
+function buildBidNordic(s) {
+  const h = s.header, times = periodTimes(s.periods), n = +s.periods.count, next = mkIds(10000100000000), out = [];
+  out.push(`Area set;${h.area}`, `Auction name;${h.auction}`, `Auction date time;${isoZ(h.auctionDt)}`);
+  (s.portfolios || []).forEach(p => out.push(['PO', p.member, p.portfolio, p.zone, fmt(or(p.resolution, 60)), or(p.currency, 'EUR'), or(p.flag, 'N')].join(';')));
+  (s.curveOrders || []).forEach(c => {
+    out.push(['SL', next(), c.user, c.member, isoZ(c.submitted)].join(';'));
+    const prices = c.prices.map(x => fmt(x).includes(',') ? fmt(x) : fmt(x) + ',0');
+    out.push(['PR', 'Period', 'OrderPeriodID', 'Active', 'Execution', ...prices].join(';'));
+    (c.rows || []).forEach((r, i) => out.push(['VL', r.period ? isoZ(r.period) : times[i], next(), or(c.active, 'Y'),
+      fmt(or(r.execution, 0)), ...(r.volumes || []).map(fmt)].join(';')));
+  });
+  (s.blockSubmissions || []).forEach(sub => {
+    out.push(['SB', sub.user, sub.member, isoZ(sub.submitted)].join(';'));
+    out.push(['BI', 'BlockID', 'Active', 'Execution', 'MAR', 'AAR', 'BlockCode', 'BlockCodePRM', 'Price', ...times, ...Array(n).fill('OrderPeriodID')].join(';'));
+    (sub.blocks || []).forEach(b => {
+      const vols = expandSeries(b.volumes, n), bid = b.id || next(), pids = presenceIds(vols, next);
+      out.push(['BL', String(bid), or(b.active, 'Y'), fmt(or(b.execution, '')), fmt(or(b.mar, 1)), fmt(or(b.aar, 1)),
+        or(b.code, 'C01'), fmt(or(b.prm, '')), fmt(or(b.price, '')), ...vols, ...pids].join(';'));
+    });
+  });
+  return [`BidFile_${h.area}_${h.auction}_${stamp(h.auctionDt)}_${stamp(h.generatedDt)}.csv`, out];
+}
+
+function buildBidSidida(s) {
+  const h = s.header, times = periodTimes(s.periods), n = +s.periods.count, next = mkIds(700000002520000), out = [];
+  const q = h.quoteKeys ? k => `"${k}"` : k => k;
+  out.push(`Auction;${h.auction}`, `${q('Auction name')};${h.auctionName}`, `${q('Auction date time')};${isoZ(h.auctionDt)}`);
+  (s.portfolios || []).forEach(p => {
+    out.push(['PO', p.member, p.portfolio, p.biddingLevel, fmt(or(p.resolution, 15)), or(p.currency, 'EUR'), or(p.flag, 'N')].join(';'));
+    (p.linearOrders || []).forEach(lo => {
+      const par = or(lo.paradoxically, 'No');
+      out.push(['SL', String(lo.id), lo.user, lo.member, isoZ(lo.submitted)].join(';'));
+      out.push(['PR', 'Period', 'OrderPeriodID', 'Active', 'Paradoxically', 'Execution', ...lo.prices.map(fmt)].join(';'));
+      (lo.rows || []).forEach(r => out.push(['VL', isoZ(r.period), next(), or(r.active, 'Y'), par, fmt(or(r.execution, 0)), ...(r.volumes || []).map(fmt)].join(';')));
+    });
+    (p.blockSubmissions || []).forEach(sub => {
+      out.push(['SB', sub.user, sub.member, isoZ(sub.submitted)].join(';'));
+      out.push(['BI', 'BlockID', 'Active', 'Execution', 'MAR', 'AAR', 'BlockCode', 'BlockCodePRM', 'Paradoxically', 'Price', ...times, ...times].join(';'));
+      (sub.blocks || []).forEach(b => {
+        const vols = expandSeries(b.volumes, n);
+        const ex = !isEmpty(b.execution) ? fmt(b.execution) : fmtNum(vols.reduce((a, v) => a + num(v), 0));
+        const pids = presenceIds(vols, next);
+        out.push(['BL', String(b.id), or(b.active, 'Y'), ex, fmt(or(b.mar, 1)), fmt(or(b.aar, 1)), or(b.code, 'C01'), fmt(or(b.prm, '')),
+          or(b.paradoxically, 'No'), fmt(or(b.price, '')), ...vols, ...pids].join(';'));
+      });
+    });
+  });
+  return [`BidFile_${h.auction}_${h.auctionName}_${stamp(h.auctionDt)}_${stamp(h.generatedDt)}.csv`, out];
+}
+
+function buildMarketResult(s) {
+  const h = s.header, m = s.market || {}, times = periodTimes(s.periods), n = +s.periods.count;
+  const res = +(s.periods.resolution || 15), cur = or(h.currency, 'EUR'), ts = times.join(';'), next = mkIds(700000002520000);
+  const series = v => expandSeries(v, n, '0').join(';');
+  const out = [`Auction;${h.auction}`, `Auction name;${h.auctionName}`, `Auction date time;${isoZ(h.auctionDt)}`,
+    `Publication date time;${isoZ(h.publicationDt)}`, h.fx ? `FX rates;${h.fx}` : 'FX rates', `Market;${h.market}`,
+    `Index prices;${res};${cur}`, ts, series(m.indexPrices), `Index volumes;${res}`, ts, series(m.indexVolumes),
+    `Net position;${res}`, ts, series(m.netPosition)];
+  const blocks = s.defaultBlocks || [];
+  if (blocks.length) out.push(`Default blocks;${res};${cur}`, ['Block name', ...blocks.map(b => b.name)].join(';'),
+    ['Block price', ...blocks.map(b => fmt(b.price))].join(';'), ['Block volume', ...blocks.map(b => fmt(b.volume))].join(';'));
+  (s.biddingLevels || []).forEach(lv => out.push(`Bidding level;${lv.name}`, `Net position;${res}`, ts, series(lv.netPosition),
+    `Imbalance;${res}`, ts, series(lv.imbalance)));
+  (s.portfolios || []).forEach(p => {
+    out.push(['Portfolio', p.member, p.portfolio, fmt(or(p.resolution, res)), or(p.currency, cur), or(p.flag, 'N')].join(';'));
+    const orders = (p.linearOrders || []).map(o => ['Linear order;' + o.name, o])
+      .concat((p.blockOrders || []).map(o => [`Block order;${o.id};${o.user}`, o]));
+    orders.forEach(([head, o]) => {
+      const vols = expandSeries(o.volumes, n, '0'), pids = vols.map(v => num(v) !== 0 ? next() : '').join(';');
+      out.push(head, ts, vols.join(';'), pids, pids);
+    });
+  });
+  return [`MarketResult_${h.auction}_${h.auctionName}_${stamp(h.auctionDt)}_${stamp(h.fileDt)}.csv`, out];
+}
+
+const BUILDERS = {bid_nordic: buildBidNordic, bid_sidida: buildBidSidida, market_result: buildMarketResult};
+function build(s) {
+  const [name, lines] = BUILDERS[s.fileType](s);
+  return [name, lines.join('\r\n') + '\r\n'];
+}
+
+/* ========================= form schemas ========================= */
+const str = (def = '', o = {}) => ({t: 'str', def, ...o});
+const list = (def = '') => ({t: 'list', def});
+const series = (pad = '') => ({t: 'series', pad});
+const bool = () => ({t: 'bool'});
+const obj = (fields, label) => ({t: 'obj', fields, label});
+const arr = (item, label) => ({t: 'arr', item, label});
+
+const periodsNode = obj([
+  ['start', str('2026-10-24T22:00:00Z', {id: 'p_start'})],
+  ['resolution', str('15', {id: 'p_res'})],
+  ['count', str('100', {id: 'p_count'})]], 'Periods');
+const ZONES = ['DK1-ENDK', 'DK2-ENDK', 'NO1-STATNETT', 'NO2-STATNETT', 'NO3-STATNETT', 'NO4-STATNETT', 'NO5-STATNETT', 'SE1-SVK', 'SE2-SVK', 'SE3-SVK', 'SE4-SVK', 'FI-FINGRID'];
+const YN = ['Y', 'N'], NOYES = ['No', 'Yes'];
+
+const SCHEMAS = {
+  bid_nordic: obj([
+    ['periods', periodsNode],
+    ['header', obj([['area', str('NORDIC')], ['auction', str('PWR-MRC-D+1')], ['auctionDt', str('2022-07-20T10:00:00Z')], ['generatedDt', str('2022-07-20T10:35:44Z')]], 'Header')],
+    ['portfolios', arr(obj([['member', str()], ['portfolio', str()], ['zone', str(ZONES[0], {opts: ZONES})], ['resolution', str('60')], ['currency', str('EUR')], ['flag', str('N')]]), 'Portfolio (PO)')],
+    ['curveOrders', arr(obj([['user', str()], ['member', str()], ['submitted', str()], ['active', str('Y', {opts: YN})], ['prices', list('-500, 19.9, 20, 450, 450.1, 600, 600.1, 4000')],
+      ['rows', arr(obj([['period', str('')], ['execution', str('0')], ['volumes', list()]]), 'Period row (VL)')]]), 'Curve order (SL/PR/VL)')],
+    ['blockSubmissions', arr(obj([['user', str()], ['member', str()], ['submitted', str()],
+      ['blocks', arr(obj([['id', str('')], ['active', str('Y', {opts: YN})], ['execution', str('')], ['mar', str('1')], ['aar', str('1')], ['code', str('C01')], ['prm', str('')], ['price', str('')], ['volumes', series('')]]), 'Block (BL)')]]), 'Block submission (SB/BI/BL)')]
+  ]),
+  bid_sidida: obj([
+    ['periods', periodsNode],
+    ['header', obj([['auction', str('SI-SIDIDA1')], ['auctionName', str('PWR-SIDIDA1-D+1')], ['auctionDt', str('2026-10-24T13:00:00Z')], ['generatedDt', str('2026-10-14T14:11:28Z')], ['quoteKeys', bool()]], 'Header')],
+    ['portfolios', arr(obj([['member', str()], ['portfolio', str()], ['biddingLevel', str('SI-ELES-IDA1')], ['resolution', str('15')], ['currency', str('EUR')], ['flag', str('N')],
+      ['linearOrders', arr(obj([['id', str()], ['user', str()], ['member', str('EPEXSPOT')], ['submitted', str()], ['prices', list('-9999, 9999')], ['paradoxically', str('No', {opts: NOYES})],
+        ['rows', arr(obj([['period', str()], ['active', str('Y', {opts: YN})], ['execution', str('0')], ['volumes', list()]]), 'Period row (VL)')]]), 'Linear order (SL/PR/VL)')],
+      ['blockSubmissions', arr(obj([['user', str('EPEXSPOT-U01')], ['member', str('EPEXSPOT')], ['submitted', str()],
+        ['blocks', arr(obj([['id', str()], ['active', str('Y', {opts: YN})], ['execution', str('')], ['mar', str('1')], ['aar', str('1')], ['code', str('C01')], ['prm', str('')], ['paradoxically', str('No', {opts: NOYES})], ['price', str('')], ['volumes', series('')]]), 'Block (BL)')]]), 'Block submission (SB/BI/BL)')]]), 'Portfolio (PO)')]
+  ]),
+  market_result: obj([
+    ['periods', periodsNode],
+    ['header', obj([['auction', str('SI-SIDIDA1')], ['auctionName', str('PWR-SIDIDA1-D+1')], ['auctionDt', str('2026-10-24T13:00:00Z')], ['publicationDt', str('2026-10-14T14:02:27Z')],
+      ['fileDt', str('2026-10-14T14:11:30Z')], ['fx', str()], ['market', str('SI-IDA1')], ['currency', str('EUR')]], 'Header')],
+    ['market', obj([['indexPrices', series('0')], ['indexVolumes', series('0')], ['netPosition', series('0')]], 'Market series')],
+    ['defaultBlocks', arr(obj([['name', str()], ['price', str()], ['volume', str()]]), 'Default block')],
+    ['biddingLevels', arr(obj([['name', str('SI-ELES-IDA1')], ['netPosition', series('0')], ['imbalance', series('0')]]), 'Bidding level')],
+    ['portfolios', arr(obj([['member', str()], ['portfolio', str()], ['resolution', str('15')], ['currency', str('EUR')], ['flag', str('N')],
+      ['linearOrders', arr(obj([['name', str()], ['volumes', series('0')]]), 'Linear order')],
+      ['blockOrders', arr(obj([['id', str()], ['user', str('EPEXSPOT-U01')], ['volumes', series('0')]]), 'Block order')]]), 'Portfolio')]
+  ])
+};
+
+/* ========================= generic form renderer ========================= */
+let CUR_N = 100;
+
+function blank(node) {
+  switch (node.t) {
+    case 'str': return node.def;
+    case 'list': return node.def ? node.def.split(',').map(s => s.trim()) : [];
+    case 'bool': return false;
+    case 'series': return [];
+    case 'arr': return [];
+    case 'obj': return Object.fromEntries(node.fields.map(([k, c]) => [k, blank(c)]));
+  }
+}
+
+const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html !== undefined) e.innerHTML = html; return e; };
+const labelled = (name, ctrl) => { const l = el('label'); l.append(el('span', '', name), ctrl); return l; };
+
+function make(node, val) {
+  if (val === undefined || val === null) val = blank(node);
+  if (node.t === 'str') {
+    let c;
+    if (node.opts) { c = el('select'); node.opts.forEach(o => c.append(new Option(o, o))); if (!node.opts.includes(String(val))) c.append(new Option(val, val)); }
+    else { c = el('input'); c.size = Math.max(8, Math.min(34, String(val).length + 2)); }
+    c.value = val;
+    if (node.id) { c.id = node.id; if (node.id === 'p_count') c.addEventListener('input', () => CUR_N = +c.value || CUR_N); }
+    return {el: c, scalar: true, get: () => c.value};
+  }
+  if (node.t === 'bool') { const c = el('input'); c.type = 'checkbox'; c.checked = !!val; return {el: c, scalar: true, get: () => c.checked}; }
+  if (node.t === 'list') {
+    const c = el('input'); c.size = 40; c.value = (val || []).join(', ');
+    return {el: c, scalar: true, get: () => c.value.split(',').map(s => s.trim()).filter(Boolean)};
+  }
+  if (node.t === 'series') {
+    const vals = expandSeries(val, CUR_N, node.pad);
+    const w = el('div');
+    w.innerHTML = `<div class="fill">Fill periods <input class="f1" value="1"> to <input class="f2" value="4"> with <input class="fv" value="-1.4">
+      <button type="button" class="alt fb">Fill</button> <button type="button" class="alt cb">Reset</button></div>`;
+    const ta = el('textarea'); ta.value = vals.join(';'); w.append(ta);
+    const cur = () => { const a = ta.value.replace(/\s+/g, '').split(';').map(fmt); while (a.length < CUR_N) a.push(node.pad); return a; };
+    w.querySelector('.fb').onclick = () => {
+      const a = cur(), f1 = +w.querySelector('.f1').value, f2 = Math.min(CUR_N, +w.querySelector('.f2').value);
+      for (let i = Math.max(1, f1) - 1; i < f2; i++) a[i] = fmt(w.querySelector('.fv').value);
+      ta.value = a.join(';');
+    };
+    w.querySelector('.cb').onclick = () => ta.value = Array(CUR_N).fill(node.pad).join(';');
+    return {el: w, get: () => cur().slice(0, CUR_N)};
+  }
+  if (node.t === 'obj') {
+    const box = el('div', 'card'); if (node.label) box.append(el('div', 'title', node.label));
+    const kids = node.fields.map(([k, child]) => {
+      const c = make(child, val[k]);
+      if (c.scalar) box.append(labelled(k, c.el));
+      else { const g = el('div'); g.append(el('b', '', k), c.el); box.append(g); }
+      return [k, c];
+    });
+    return {el: box, get: () => Object.fromEntries(kids.map(([k, c]) => [k, c.get()]))};
+  }
+  if (node.t === 'arr') {
+    const box = el('div'), items = el('div'), list = [];
+    const add = v => {
+      const card = el('div'), rm = el('button', 'del', 'remove'), c = make(node.item, v);
+      rm.type = 'button';
+      const entry = {get: () => c.get()};
+      rm.onclick = () => { card.remove(); list.splice(list.indexOf(entry), 1); };
+      card.append(rm, c.el); items.append(card); list.push(entry);
+    };
+    (val || []).forEach(add);
+    const btn = el('button', 'alt', '+ ' + (node.label || 'add')); btn.type = 'button'; btn.onclick = () => add(undefined);
+    box.append(items, btn);
+    return {el: box, get: () => list.map(e => e.get())};
+  }
+}
+
+let root = null;
+function renderForm(scenario) {
+  const type = $('fileType').value;
+  CUR_N = +(scenario && scenario.periods && scenario.periods.count) || 100;
+  root = make(SCHEMAS[type], scenario);
+  $('form').innerHTML = '';
+  $('form').append(root.el);
+  $('out').textContent = '';
+  $('fname').textContent = '';
+}
+
+const scenario = () => ({fileType: $('fileType').value, ...root.get()});
+
+function generate() {
+  const [name, text] = build(scenario());
+  $('out').textContent = text;
+  $('fname').textContent = name;
+  return [name, text];
+}
+function save(name, text, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], {type}));
+  a.download = name; a.click();
+}
+function downloadCsv() { const [n, t] = generate(); save(n, t, 'text/csv'); }
+function saveScenario() { save(`scenario_${$('fileType').value}.json`, JSON.stringify(scenario(), null, 2), 'application/json'); }
+
+$('loadFile').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  f.text().then(t => { const s = JSON.parse(t); $('fileType').value = s.fileType; renderForm(s); });
+  e.target.value = '';
+});
+$('fileType').addEventListener('change', () => renderForm());
+
+/* ========================= samples (same content as testdata/scenarios/*.json) ========================= */
+const SAMPLES = {
+  bid_nordic: {fileType: 'bid_nordic', periods: {start: '2022-07-20T22:00:00Z', resolution: 60, count: 24},
+    header: {area: 'NORDIC', auction: 'PWR-MRC-D+1', auctionDt: '2022-07-20T10:00:00Z', generatedDt: '2022-07-20T10:35:44Z'},
+    portfolios: [{member: 'ALIPES', portfolio: 'ALIPES-T01', zone: 'DK1-ENDK', resolution: 60, currency: 'EUR', flag: 'N'}],
+    curveOrders: [{user: 'ALIPES-U01', member: 'ALIPES', submitted: '2022-07-20T08:01:23Z', active: 'Y', prices: [-500, 19.9, 20, 450, 450.1, 600, 600.1, 4000],
+      rows: [{execution: 15, volumes: [15, 15, 15, 15, 0, 0, 0, 0]}, {execution: 15, volumes: [15, 15, 15, 15, 0, 0, 0, 0]}]}],
+    blockSubmissions: [{user: 'DANSKE-U04', member: 'DANSKE', submitted: '2022-07-20T09:12:37Z',
+      blocks: [{active: 'Y', execution: 0.8, mar: 1, aar: 1, code: 'C01', price: 940.4, volumes: {default: '', ranges: [{from: 14, to: 17, value: 0.2}]}}]}]},
+  bid_sidida: {fileType: 'bid_sidida', periods: {start: '2026-10-24T22:00:00Z', resolution: 15, count: 100},
+    header: {auction: 'SI-SIDIDA1', auctionName: 'PWR-SIDIDA1-D+1', auctionDt: '2026-10-24T13:00:00Z', generatedDt: '2026-10-14T14:11:28Z', quoteKeys: true},
+    portfolios: [{member: 'ENOS', portfolio: 'ENOS-TB01', biddingLevel: 'SI-ELES-IDA1', resolution: 15, currency: 'EUR', flag: 'N',
+      linearOrders: [{id: 700000000007996, user: 'SDAOUD', member: 'EPEXSPOT', submitted: '2026-10-05T08:59:27Z', prices: [-9999, 9999], paradoxically: 'No',
+        rows: [{period: '2026-10-24T22:00:00Z', active: 'Y', execution: 1, volumes: [1, 1]}, {period: '2026-10-25T22:45:00Z', active: 'Y', execution: 11, volumes: [11, 11]}]}],
+      blockSubmissions: [{user: 'EPEXSPOT-U01', member: 'EPEXSPOT', submitted: '2026-10-05T08:56:33Z', blocks: [
+        {id: 700000000007834, active: 'Y', execution: '', mar: 1, aar: 1, code: 'C01', paradoxically: 'No', price: 1, volumes: {default: '', ranges: [{from: 1, to: 4, value: -1.4}]}},
+        {id: 700000000007835, active: 'Y', execution: '', mar: 1, aar: 1, code: 'C01', paradoxically: 'No', price: 1, volumes: {default: '', ranges: [{from: 5, to: 8, value: -1.4}]}}]}]}]},
+  market_result: {fileType: 'market_result', periods: {start: '2026-10-24T22:00:00Z', resolution: 15, count: 100},
+    header: {auction: 'SI-SIDIDA1', auctionName: 'PWR-SIDIDA1-D+1', auctionDt: '2026-10-24T13:00:00Z', publicationDt: '2026-10-14T14:02:27Z', fileDt: '2026-10-14T14:11:30Z', fx: '', market: 'SI-IDA1', currency: 'EUR'},
+    market: {indexPrices: {default: '13,87'}, indexVolumes: {default: '1,4'}, netPosition: {default: '0'}},
+    defaultBlocks: [{name: 'Baseload', price: '13,53', volume: '983,2'}, {name: 'Peakload', price: '13,45', volume: '814,4'}],
+    biddingLevels: [{name: 'SI-ELES-IDA1', netPosition: {default: '0'}, imbalance: {default: '0'}}],
+    portfolios: [{member: 'ENOS', portfolio: 'ENOS-TB01', resolution: 15, currency: 'EUR', flag: 'N',
+      linearOrders: [{name: 'SDAOUD', volumes: {default: '0', ranges: [{from: 1, to: 1, value: '1,0'}]}}],
+      blockOrders: [{id: 700000000007834, user: 'EPEXSPOT-U01', volumes: {default: '0', ranges: [{from: 1, to: 4, value: '-1,4'}]}}]}]}
+};
+function loadSample() { renderForm(SAMPLES[$('fileType').value]); }
+
+loadSample();
+</script>
+</body>
+</html>

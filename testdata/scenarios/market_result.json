@@ -1,0 +1,27 @@
+{
+  "fileType": "market_result",
+  "periods": {"start": "2026-10-24T22:00:00Z", "resolution": 15, "count": 100},
+  "header": {"auction": "SI-SIDIDA1", "auctionName": "PWR-SIDIDA1-D+1", "auctionDt": "2026-10-24T13:00:00Z",
+             "publicationDt": "2026-10-14T14:02:27Z", "fileDt": "2026-10-14T14:11:30Z", "fx": "", "market": "SI-IDA1", "currency": "EUR"},
+  "market": {
+    "indexPrices": {"default": "13,87"},
+    "indexVolumes": {"default": "1,4"},
+    "netPosition": {"default": "0"}
+  },
+  "defaultBlocks": [
+    {"name": "Baseload", "price": "13,53", "volume": "983,2"},
+    {"name": "Peakload", "price": "13,45", "volume": "814,4"}
+  ],
+  "biddingLevels": [
+    {"name": "SI-ELES-IDA1", "netPosition": {"default": "0"}, "imbalance": {"default": "0"}}
+  ],
+  "portfolios": [
+    {
+      "member": "ENOS", "portfolio": "ENOS-TB01", "resolution": 15, "currency": "EUR", "flag": "N",
+      "linearOrders": [{"name": "SDAOUD", "volumes": {"default": "0", "ranges": [{"from": 1, "to": 1, "value": "1,0"}]}}],
+      "blockOrders": [
+        {"id": 700000000007834, "user": "EPEXSPOT-U01", "volumes": {"default": "0", "ranges": [{"from": 1, "to": 4, "value": "-1,4"}]}}
+      ]
+    }
+  ]
+}
