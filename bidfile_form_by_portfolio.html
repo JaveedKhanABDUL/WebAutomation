@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BidFile Form Builder (grouped by portfolio)</title>
+<style>
+  body { font-family: Segoe UI, Arial, sans-serif; margin: 20px; background: #f4f6f8; color: #222; }
+  h1 { margin-top: 0; }
+  fieldset { background: #fff; border: 1px solid #c8d0d8; border-radius: 6px; margin-bottom: 16px; }
+  legend { font-weight: 600; padding: 0 8px; }
+  label { display: inline-block; margin: 4px 12px 4px 0; font-size: 13px; }
+  input, select { padding: 4px 6px; border: 1px solid #aab; border-radius: 4px; }
+  input.num { width: 70px; }
+  table { border-collapse: collapse; margin: 6px 0; }
+  td, th { border: 1px solid #d5dbe1; padding: 2px 4px; font-size: 12px; }
+  .pf { border: 2px solid #1f6feb; border-radius: 8px; padding: 10px; margin: 12px 0; background: #fff; }
+  .pf > h3 { margin: 0 0 6px; color: #1f6feb; }
+  .sec { border-left: 4px solid #99a; padding-left: 10px; margin: 10px 0; }
+  .sec h4 { margin: 4px 0; }
+  .card { border: 1px dashed #99a; border-radius: 6px; padding: 8px; margin: 8px 0; background: #fafbfc; overflow-x: auto; }
+  button { padding: 5px 12px; border: 0; border-radius: 4px; background: #1f6feb; color: #fff; cursor: pointer; margin: 2px; }
+  button.del { background: #c0392b; }
+  button.alt { background: #555; }
+  pre { background: #111; color: #9f9; padding: 10px; max-height: 400px; overflow: auto; }
+  #fname { font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>BidFile Form Builder <small>(grouped by portfolio)</small></h1>
+
+<fieldset>
+  <legend>1. File header</legend>
+  <label>Area set <input id="area" value="NORDIC"></label>
+  <label>Auction name <input id="auction" value="PWR-MRC-D+1"></label>
+  <label>Auction date/time (UTC) <input id="auctionDt" type="datetime-local" value="2022-07-20T10:00"></label>
+  <label>Generated at (UTC) <input id="genDt" type="datetime-local" value="2022-07-20T10:35"></label>
+  <label>Delivery day start (UTC) <input id="delStart" type="datetime-local" value="2022-07-20T22:00"></label>
+  <label>Periods <input id="periods" class="num" type="number" min="1" max="100" value="24"></label>
+  <div>File name: <span id="fname"></span></div>
+</fieldset>
+
+<fieldset>
+  <legend>2. Portfolios (each with its own curve orders and block orders)</legend>
+  <div id="portfolios"></div>
+  <button type="button" onclick="addPortfolio()">+ Portfolio</button>
+</fieldset>
+
+<button type="button" onclick="generate()">Generate CSV</button>
+<button type="button" class="alt" onclick="download()">Download</button>
+<pre id="out"></pre>
+
+<script>
+const $ = id => document.getElementById(id);
+const ZONES = ['DK1-ENDK','DK2-ENDK','NO1-STATNETT','NO2-STATNETT','NO3-STATNETT','NO4-STATNETT','NO5-STATNETT','SE1-SVK','SE2-SVK','SE3-SVK','SE4-SVK','FI-FINGRID'];
+let idCounter = 10000100000000;
+const nextId = () => ++idCounter;
+let pfCount = 0;
+
+const iso = v => v ? (v.length === 16 ? v + ':00Z' : v + 'Z') : '';
+const dec = v => String(v === '' || v == null ? '' : v).replace('.', ',');
+const addHours = (v, h) => { const d = new Date(v + ':00Z'); d.setUTCHours(d.getUTCHours() + h); return d.toISOString().slice(0, 19) + 'Z'; };
+const stamp = v => v.replace(/[-:T]/g, '').slice(0, 14).padEnd(14, '0');
+const nPeriods = () => Math.max(1, +$('periods').value || 1);
+
+function updateName() {
+  $('fname').textContent = `BidFile_${$('area').value}_${$('auction').value}_${stamp($('auctionDt').value)}_${stamp($('genDt').value)}.csv`;
+}
+['area','auction','auctionDt','genDt'].forEach(i => $(i).addEventListener('input', updateName));
+$('periods').addEventListener('change', () => {
+  document.querySelectorAll('.curve').forEach(rebuildGrid);
+  document.querySelectorAll('.block').forEach(rebuildBlockRows);
+});
+
+function addPortfolio(v = {}) {
+  const d = document.createElement('div');
+  d.className = 'pf';
+  d.innerHTML = `<h3>Portfolio <span class="pfno">${++pfCount}</span></h3>
+    <label>Member <input class="m" value="${v.m || ''}"></label>
+    <label>Portfolio <input class="p" value="${v.p || ''}"></label>
+    <label>Bidding zone <select class="z">${ZONES.map(z => `<option ${z === v.z ? 'selected' : ''}>${z}</option>`).join('')}</select></label>
+    <label>Resolution (min) <input class="r num" value="60"></label>
+    <label>Currency <input class="c num" value="EUR"></label>
+    <label>Flag <input class="f num" value="N"></label>
+    <button type="button" class="del" onclick="this.closest('.pf').remove()">Remove portfolio</button>
+    <div class="sec"><h4>Curve orders (SL / PR / VL)</h4><div class="curves"></div>
+      <button type="button" onclick="addCurve(this.closest('.pf'))">+ Curve order</button></div>
+    <div class="sec"><h4>Block orders (SB / BI / BL)</h4><div class="blocks"></div>
+      <button type="button" onclick="addBlock(this.closest('.pf'))">+ Block submission</button></div>`;
+  $('portfolios').appendChild(d);
+  return d;
+}
+
+function addCurve(pf, v = {}) {
+  const d = document.createElement('div');
+  d.className = 'card curve';
+  d.innerHTML = `<label>User <input class="u" value="${v.u || ''}"></label><label>Member <input class="m" value="${v.m || ''}"></label>
+    <label>Submitted (UTC) <input class="t" type="datetime-local"></label>
+    <label>Active <select class="a"><option>Y</option><option>N</option></select></label>
+    <button type="button" class="del" onclick="this.closest('.curve').remove()">Remove order</button><br>
+    <label>Price points (EUR/MWh, comma-separated) <input class="prices" size="60" value="-500, 19.9, 20, 450, 450.1, 600, 600.1, 4000"></label>
+    <button type="button" class="alt" onclick="rebuildGrid(this.closest('.curve'))">Update grid</button>
+    <div class="grid"></div>`;
+  pf.querySelector('.curves').appendChild(d);
+  rebuildGrid(d);
+  return d;
+}
+
+function rebuildGrid(card) {
+  const prices = card.querySelector('.prices').value.split(',').map(s => s.trim()).filter(Boolean);
+  let h = '<table><tr><th>Period</th><th>Exec (MW)</th>' + prices.map(p => `<th>${p}</th>`).join('') + '</tr>';
+  for (let i = 0; i < nPeriods(); i++) {
+    h += `<tr class="vl"><td>${i}</td><td><input class="num e" value="0"></td>` +
+      prices.map(() => '<td><input class="num v" value="0"></td>').join('') + '</tr>';
+  }
+  card.querySelector('.grid').innerHTML = h + '</table>';
+}
+
+function addBlock(pf, v = {}) {
+  const d = document.createElement('div');
+  d.className = 'card block';
+  d.innerHTML = `<label>User <input class="u" value="${v.u || ''}"></label><label>Member <input class="m" value="${v.m || ''}"></label>
+    <label>Submitted (UTC) <input class="t" type="datetime-local"></label>
+    <button type="button" class="del" onclick="this.closest('.block').remove()">Remove submission</button><br>
+    <button type="button" class="alt" onclick="addBlockRow(this.closest('.block'))">+ Block</button>
+    <div class="rows"></div>`;
+  pf.querySelector('.blocks').appendChild(d);
+  addBlockRow(d);
+  return d;
+}
+
+function addBlockRow(card) {
+  const n = nPeriods();
+  const row = document.createElement('div');
+  row.innerHTML = `<label>Active <select class="a"><option>Y</option><option>N</option></select></label>
+    <label>Exec <input class="num ex" value="1,00"></label><label>MAR <input class="num mar" value="1,00"></label>
+    <label>AAR <input class="num aar" value="1"></label><label>Code <input class="num code" value="C01"></label>
+    <label>Price <input class="num price"></label>
+    <button type="button" class="del" onclick="this.closest('.brow').remove()">x</button>
+    <table><tr>${Array.from({length: n}, (_, i) => `<th>${i}</th>`).join('')}</tr>
+    <tr>${Array.from({length: n}, () => '<td><input class="num bv"></td>').join('')}</tr></table>`;
+  row.className = 'brow';
+  card.querySelector('.rows').appendChild(row);
+}
+
+function rebuildBlockRows(card) {
+  const count = card.querySelectorAll('.brow').length;
+  card.querySelector('.rows').innerHTML = '';
+  for (let i = 0; i < count; i++) addBlockRow(card);
+}
+
+function generate() {
+  const L = [];
+  const n = nPeriods();
+  const periods = Array.from({length: n}, (_, i) => addHours($('delStart').value, i));
+  L.push(`Area set;${$('area').value}`, `Auction name;${$('auction').value}`, `Auction date time;${iso($('auctionDt').value)}`);
+
+  document.querySelectorAll('#portfolios > .pf').forEach(pf => {
+    const g = c => pf.querySelector(c).value;
+    L.push(['PO', g('.m'), g('.p'), g('.z'), g('.r'), g('.c'), g('.f')].join(';'));
+
+    pf.querySelectorAll('.curve').forEach(card => {
+      const q = c => card.querySelector(c).value;
+      const prices = q('.prices').split(',').map(s => dec(s.trim())).filter(Boolean)
+        .map(p => p.includes(',') ? p : p + ',0');
+      L.push(['SL', nextId(), q('.u'), q('.m'), iso(q('.t'))].join(';'));
+      L.push(['PR', 'Period', 'OrderPeriodID', 'Active', 'Execution', ...prices].join(';'));
+      card.querySelectorAll('.vl').forEach((r, i) => {
+        const vols = [...r.querySelectorAll('.v')].map(x => dec(x.value || '0'));
+        L.push(['VL', periods[i], nextId(), q('.a'), dec(r.querySelector('.e').value || '0'), ...vols].join(';'));
+      });
+    });
+
+    pf.querySelectorAll('.block').forEach(card => {
+      const q = c => card.querySelector(c).value;
+      L.push(['SB', q('.u'), q('.m'), iso(q('.t'))].join(';'));
+      L.push(['BI', 'BlockID', 'Active', 'Execution', 'MAR', 'AAR', 'BlockCode', 'BlockCodePRM', 'Price', ...periods, ...periods.map(() => 'OrderPeriodID')].join(';'));
+      card.querySelectorAll('.brow').forEach(r => {
+        const b = c => r.querySelector(c).value;
+        const vols = [...r.querySelectorAll('.bv')].map(x => dec(x.value));
+        const ids = vols.map(v => v === '' ? '' : nextId());
+        L.push(['BL', nextId(), b('.a'), dec(b('.ex')), dec(b('.mar')), b('.aar'), b('.code'), '', dec(b('.price')), ...vols, ...ids].join(';'));
+      });
+    });
+  });
+
+  $('out').textContent = L.join('\r\n');
+  return L.join('\r\n');
+}
+
+function download() {
+  const blob = new Blob([generate() + '\r\n'], {type: 'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = $('fname').textContent;
+  a.click();
+}
+
+updateName();
+const pf1 = addPortfolio({m: 'ALIPES', p: 'ALIPES-T01', z: 'DK1-ENDK'});
+addCurve(pf1, {u: 'ALIPES-U01', m: 'ALIPES'});
+addBlock(pf1, {u: 'ALIPES-U01', m: 'ALIPES'});
+</script>
+</body>
+</html>
