@@ -58,6 +58,8 @@ function fmt(v) {
   return String(v).trim().replace('.', ',');
 }
 function num(v) { const x = parseFloat(String(v).replace(',', '.')); return isNaN(x) ? 0 : x; }
+function fmt1(v) { const s = fmt(v); return s === '' || s.includes(',') ? s : s + ',0'; }
+function fmtSum(x) { const s = fmtNum(x); return s.includes(',') || s === '0' ? s : s + ',0'; }
 function fmtNum(x) {
   let s = (Math.round(x * 1e6) / 1e6).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
   return s === '' || s === '-0' ? '0' : s.replace('.', ',');
@@ -86,23 +88,29 @@ const or = (v, d) => v === undefined ? d : v;
 function buildBidNordic(s) {
   const h = s.header, times = periodTimes(s.periods), n = +s.periods.count, next = mkIds(10000100000000), out = [];
   out.push(`Area set;${h.area}`, `Auction name;${h.auction}`, `Auction date time;${isoZ(h.auctionDt)}`);
-  (s.portfolios || []).forEach(p => out.push(['PO', p.member, p.portfolio, p.zone, fmt(or(p.resolution, 60)), or(p.currency, 'EUR'), or(p.flag, 'N')].join(';')));
-  (s.curveOrders || []).forEach(c => {
+  const curve = c => {
     out.push(['SL', next(), c.user, c.member, isoZ(c.submitted)].join(';'));
-    const prices = c.prices.map(x => fmt(x).includes(',') ? fmt(x) : fmt(x) + ',0');
-    out.push(['PR', 'Period', 'OrderPeriodID', 'Active', 'Execution', ...prices].join(';'));
+    out.push(['PR', 'Period', 'OrderPeriodID', 'Active', 'Execution', ...c.prices.map(fmt1)].join(';'));
     (c.rows || []).forEach((r, i) => out.push(['VL', r.period ? isoZ(r.period) : times[i], next(), or(c.active, 'Y'),
-      fmt(or(r.execution, 0)), ...(r.volumes || []).map(fmt)].join(';')));
-  });
-  (s.blockSubmissions || []).forEach(sub => {
+      num(or(r.execution, 0)) !== 0 ? fmt1(or(r.execution, 0)) : '0', ...(r.volumes || []).map(fmt1)].join(';')));
+  };
+  const submission = sub => {
     out.push(['SB', sub.user, sub.member, isoZ(sub.submitted)].join(';'));
-    out.push(['BI', 'BlockID', 'Active', 'Execution', 'MAR', 'AAR', 'BlockCode', 'BlockCodePRM', 'Price', ...times, ...Array(n).fill('OrderPeriodID')].join(';'));
+    out.push(['BI', 'BlockID', 'Active', 'Execution', 'MAR', 'AAR', 'BlockCode', 'BlockCodePRM', 'Price', ...times, ...times].join(';'));
     (sub.blocks || []).forEach(b => {
       const vols = expandSeries(b.volumes, n), bid = b.id || next(), pids = presenceIds(vols, next);
-      out.push(['BL', String(bid), or(b.active, 'Y'), fmt(or(b.execution, '')), fmt(or(b.mar, 1)), fmt(or(b.aar, 1)),
+      const ex = !isEmpty(b.execution) ? fmt(b.execution) : fmtSum(vols.reduce((a, v) => a + num(v), 0));
+      out.push(['BL', String(bid), or(b.active, 'Y'), ex, fmt(or(b.mar, 1)), fmt(or(b.aar, 1)),
         or(b.code, 'C01'), fmt(or(b.prm, '')), fmt(or(b.price, '')), ...vols, ...pids].join(';'));
     });
+  };
+  (s.portfolios || []).forEach(p => {
+    out.push(['PO', p.member, p.portfolio, p.zone, fmt(or(p.resolution, 60)), or(p.currency, 'EUR'), or(p.flag, 'N')].join(';'));
+    (p.curveOrders || []).forEach(curve);
+    (p.blockSubmissions || []).forEach(submission);
   });
+  (s.curveOrders || []).forEach(curve);
+  (s.blockSubmissions || []).forEach(submission);
   return [`BidFile_${h.area}_${h.auction}_${stamp(h.auctionDt)}_${stamp(h.generatedDt)}.csv`, out];
 }
 
@@ -183,11 +191,11 @@ const SCHEMAS = {
   bid_nordic: obj([
     ['periods', periodsNode],
     ['header', obj([['area', str('NORDIC')], ['auction', str('PWR-MRC-D+1')], ['auctionDt', str('2022-07-20T10:00:00Z')], ['generatedDt', str('2022-07-20T10:35:44Z')]], 'Header')],
-    ['portfolios', arr(obj([['member', str()], ['portfolio', str()], ['zone', str(ZONES[0], {opts: ZONES})], ['resolution', str('60')], ['currency', str('EUR')], ['flag', str('N')]]), 'Portfolio (PO)')],
-    ['curveOrders', arr(obj([['user', str()], ['member', str()], ['submitted', str()], ['active', str('Y', {opts: YN})], ['prices', list('-500, 19.9, 20, 450, 450.1, 600, 600.1, 4000')],
-      ['rows', arr(obj([['period', str('')], ['execution', str('0')], ['volumes', list()]]), 'Period row (VL)')]]), 'Curve order (SL/PR/VL)')],
-    ['blockSubmissions', arr(obj([['user', str()], ['member', str()], ['submitted', str()],
-      ['blocks', arr(obj([['id', str('')], ['active', str('Y', {opts: YN})], ['execution', str('')], ['mar', str('1')], ['aar', str('1')], ['code', str('C01')], ['prm', str('')], ['price', str('')], ['volumes', series('')]]), 'Block (BL)')]]), 'Block submission (SB/BI/BL)')]
+    ['portfolios', arr(obj([['member', str()], ['portfolio', str()], ['zone', str(ZONES[0], {opts: ZONES})], ['resolution', str('60')], ['currency', str('EUR')], ['flag', str('N')],
+      ['curveOrders', arr(obj([['user', str()], ['member', str()], ['submitted', str()], ['active', str('Y', {opts: YN})], ['prices', list('-500, 19.9, 20, 450, 450.1, 600, 600.1, 4000')],
+        ['rows', arr(obj([['period', str('')], ['execution', str('0')], ['volumes', list()]]), 'Period row (VL)')]]), 'Curve order (SL/PR/VL)')],
+      ['blockSubmissions', arr(obj([['user', str()], ['member', str()], ['submitted', str()],
+        ['blocks', arr(obj([['id', str('')], ['active', str('Y', {opts: YN})], ['execution', str('')], ['mar', str('1')], ['aar', str('1')], ['code', str('C01')], ['prm', str('')], ['price', str('')], ['volumes', series('')]]), 'Block (BL)')]]), 'Block submission (SB/BI/BL)')]]), 'Portfolio (PO)')]
   ]),
   bid_sidida: obj([
     ['periods', periodsNode],
@@ -322,11 +330,14 @@ $('fileType').addEventListener('change', () => renderForm());
 const SAMPLES = {
   bid_nordic: {fileType: 'bid_nordic', periods: {start: '2022-07-20T22:00:00Z', resolution: 60, count: 24},
     header: {area: 'NORDIC', auction: 'PWR-MRC-D+1', auctionDt: '2022-07-20T10:00:00Z', generatedDt: '2022-07-20T10:35:44Z'},
-    portfolios: [{member: 'ALIPES', portfolio: 'ALIPES-T01', zone: 'DK1-ENDK', resolution: 60, currency: 'EUR', flag: 'N'}],
-    curveOrders: [{user: 'ALIPES-U01', member: 'ALIPES', submitted: '2022-07-20T08:01:23Z', active: 'Y', prices: [-500, 19.9, 20, 450, 450.1, 600, 600.1, 4000],
-      rows: [{execution: 15, volumes: [15, 15, 15, 15, 0, 0, 0, 0]}, {execution: 15, volumes: [15, 15, 15, 15, 0, 0, 0, 0]}]}],
-    blockSubmissions: [{user: 'DANSKE-U04', member: 'DANSKE', submitted: '2022-07-20T09:12:37Z',
-      blocks: [{active: 'Y', execution: 0.8, mar: 1, aar: 1, code: 'C01', price: 940.4, volumes: {default: '', ranges: [{from: 14, to: 17, value: 0.2}]}}]}]},
+    portfolios: [
+      {member: 'ALIPES', portfolio: 'ALIPES-T01', zone: 'DK1-ENDK', resolution: 60, currency: 'EUR', flag: 'N',
+        curveOrders: [{user: 'ALIPES-U01', member: 'ALIPES', submitted: '2022-07-20T08:01:23Z', active: 'Y', prices: [-500, 19.9, 20, 450, 450.1, 600, 600.1, 4000],
+          rows: [{execution: 15, volumes: [15, 15, 15, 15, 0, 0, 0, 0]}, {execution: 15, volumes: [15, 15, 15, 15, 0, 0, 0, 0]}]}],
+        blockSubmissions: []},
+      {member: 'DANSKE', portfolio: 'DANSKE-T01', zone: 'NO1-STATNETT', resolution: 60, currency: 'EUR', flag: 'N', curveOrders: [],
+        blockSubmissions: [{user: 'DANSKE-U04', member: 'DANSKE', submitted: '2022-07-20T09:12:37Z',
+          blocks: [{active: 'Y', mar: 1, aar: 1, code: 'C01', price: 940.4, volumes: {default: '', ranges: [{from: 14, to: 17, value: 0.2}]}}]}]}]},
   bid_sidida: {fileType: 'bid_sidida', periods: {start: '2026-10-24T22:00:00Z', resolution: 15, count: 100},
     header: {auction: 'SI-SIDIDA1', auctionName: 'PWR-SIDIDA1-D+1', auctionDt: '2026-10-24T13:00:00Z', generatedDt: '2026-10-14T14:11:28Z', quoteKeys: true},
     portfolios: [{member: 'ENOS', portfolio: 'ENOS-TB01', biddingLevel: 'SI-ELES-IDA1', resolution: 15, currency: 'EUR', flag: 'N',

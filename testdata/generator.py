@@ -23,11 +23,23 @@ def fmt(v):
     return str(v).strip().replace(".", ",")
 
 
+def fmt1(v):
+    """Like fmt, but whole numbers get one decimal (15 -> 15,0); empty stays empty."""
+    s = fmt(v)
+    return s if s == "" or "," in s else s + ",0"
+
+
 def num(v):
     try:
         return float(str(v).replace(",", "."))
     except ValueError:
         return 0.0
+
+
+def fmt_sum(x):
+    """Sum of volumes with at least one decimal (0,8 / -3,0), as in real files."""
+    s = fmt_num(x)
+    return s if "," in s or s == "0" else s + ",0"
 
 
 def fmt_num(x):
@@ -80,31 +92,48 @@ def presence_ids(vols, ids):
 
 
 def build_bid_nordic(s):
+    """Portfolios carry their own curveOrders / blockSubmissions, written right after each PO line.
+
+    Top-level curveOrders / blockSubmissions (legacy) are still accepted and written at the end.
+    """
     h, times, n = s["header"], period_times(s["periods"]), int(s["periods"]["count"])
     ids, out = Ids(10000100000000), []
     out += [f"Area set;{h['area']}", f"Auction name;{h['auction']}", f"Auction date time;{iso_z(h['auctionDt'])}"]
-    for p in s.get("portfolios", []):
-        out.append(";".join(["PO", p["member"], p["portfolio"], p["zone"], fmt(p.get("resolution", 60)),
-                             p.get("currency", "EUR"), p.get("flag", "N")]))
-    for c in s.get("curveOrders", []):
+
+    def curve(c):
         out.append(";".join(["SL", ids.next(), c["user"], c["member"], iso_z(c["submitted"])]))
-        prices = [fmt(x) if "," in fmt(x) else fmt(x) + ",0" for x in c["prices"]]
+        prices = [fmt1(x) for x in c["prices"]]
         out.append(";".join(["PR", "Period", "OrderPeriodID", "Active", "Execution", *prices]))
         for i, r in enumerate(c.get("rows", [])):
             period = iso_z(r["period"]) if r.get("period") else times[i]
-            out.append(";".join(["VL", period, ids.next(), c.get("active", "Y"), fmt(r.get("execution", 0)),
-                                 *[fmt(x) for x in r.get("volumes", [])]]))
-    for sub in s.get("blockSubmissions", []):
+            execution = fmt1(r.get("execution", 0)) if num(r.get("execution", 0)) != 0 else "0"
+            out.append(";".join(["VL", period, ids.next(), c.get("active", "Y"), execution,
+                                 *[fmt1(x) for x in r.get("volumes", [])]]))
+
+    def submission(sub):
         out.append(";".join(["SB", sub["user"], sub["member"], iso_z(sub["submitted"])]))
         out.append(";".join(["BI", "BlockID", "Active", "Execution", "MAR", "AAR", "BlockCode", "BlockCodePRM",
-                             "Price", *times, *["OrderPeriodID"] * n]))
+                             "Price", *times, *times]))
         for b in sub.get("blocks", []):
             vols = expand_series(b.get("volumes"), n)
             bid = b.get("id") or ids.next()
             pids = presence_ids(vols, ids)
-            out.append(";".join(["BL", str(bid), b.get("active", "Y"), fmt(b.get("execution", "")), fmt(b.get("mar", 1)),
+            ex = fmt(b["execution"]) if b.get("execution") not in (None, "") else fmt_sum(sum(num(v) for v in vols))
+            out.append(";".join(["BL", str(bid), b.get("active", "Y"), ex, fmt(b.get("mar", 1)),
                                  fmt(b.get("aar", 1)), b.get("code", "C01"), fmt(b.get("prm", "")),
                                  fmt(b.get("price", "")), *vols, *pids]))
+
+    for p in s.get("portfolios", []):
+        out.append(";".join(["PO", p["member"], p["portfolio"], p["zone"], fmt(p.get("resolution", 60)),
+                             p.get("currency", "EUR"), p.get("flag", "N")]))
+        for c in p.get("curveOrders", []):
+            curve(c)
+        for sub in p.get("blockSubmissions", []):
+            submission(sub)
+    for c in s.get("curveOrders", []):
+        curve(c)
+    for sub in s.get("blockSubmissions", []):
+        submission(sub)
     name = f"BidFile_{h['area']}_{h['auction']}_{stamp(h['auctionDt'])}_{stamp(h['generatedDt'])}.csv"
     return name, out
 

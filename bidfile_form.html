@@ -67,6 +67,9 @@ const nextId = () => ++idCounter;
 
 const iso = v => v ? v.length === 16 ? v + ':00Z' : v + 'Z' : '';
 const dec = v => String(v === '' || v == null ? '' : v).replace('.', ',');
+const num = v => parseFloat(String(v).replace(',', '.')) || 0;
+const dec1 = v => v === '' ? '' : (Number.isInteger(num(v)) ? num(v).toFixed(1).replace('.', ',') : dec(v));
+const fmtSum = x => { const s = (Math.round(x * 1e6) / 1e6).toString().replace('.', ','); return s.includes(',') || x === 0 ? s : s + ',0'; };
 const addHours = (v, h) => { const d = new Date(v + ':00Z'); d.setUTCHours(d.getUTCHours() + h); return d.toISOString().slice(0, 19) + 'Z'; };
 const stamp = v => v.replace(/[-:T]/g, '').slice(0, 14).padEnd(14, '0');
 const nPeriods = () => Math.max(1, +$('periods').value || 1);
@@ -105,7 +108,7 @@ function rebuildGrid(card) {
   let h = '<table><tr><th>Period (UTC)</th><th>Exec (MW)</th>' + prices.map(p => `<th>${p}</th>`).join('') + '</tr>';
   for (let i = 0; i < nPeriods(); i++) {
     h += `<tr class="vl"><td class="pt">${i}</td><td><input class="num e" value="0"></td>` +
-      prices.map(() => '<td><input class="num v" value="0"></td>').join('') + '</tr>';
+      prices.map(() => '<td><input class="num v"></td>').join('') + '</tr>';
   }
   card.querySelector('.grid').innerHTML = h + '</table>';
 }
@@ -127,7 +130,7 @@ function addBlockRow(card) {
   const row = document.createElement('div');
   row.className = 'brow';
   row.innerHTML = `<label>Active <select class="a"><option>Y</option><option>N</option></select></label>
-    <label>Exec <input class="num ex" value="1,00"></label><label>MAR <input class="num mar" value="1,00"></label>
+    <label>Exec <input class="num ex" placeholder="auto" title="empty = sum of volumes"></label><label>MAR <input class="num mar" value="1,00"></label>
     <label>AAR <input class="num aar" value="1"></label><label>Code <input class="num code" value="C01"></label>
     <label>Price <input class="num price"></label>
     <button type="button" class="del" onclick="this.closest('.brow').remove()">x</button>
@@ -160,20 +163,21 @@ function generate() {
     L.push(['SL', nextId(), g('.u'), g('.m'), iso(g('.t'))].join(';'));
     L.push(['PR', 'Period', 'OrderPeriodID', 'Active', 'Execution', ...prices.map(p => p.includes(',') ? p : p + ',0')].join(';'));
     card.querySelectorAll('.vl').forEach((r, i) => {
-      const vols = [...r.querySelectorAll('.v')].map(x => dec(x.value || '0'));
-      L.push(['VL', periods[i], nextId(), g('.a'), dec(r.querySelector('.e').value || '0'), ...vols].join(';'));
+      const vols = [...r.querySelectorAll('.v')].map(x => dec1(x.value));
+      L.push(['VL', periods[i], nextId(), g('.a'), (num(r.querySelector('.e').value) === 0 ? '0' : dec1(r.querySelector('.e').value)), ...vols].join(';'));
     });
   });
 
   document.querySelectorAll('.block').forEach(card => {
     const g = c => card.querySelector(c).value;
     L.push(['SB', g('.u'), g('.m'), iso(g('.t'))].join(';'));
-    L.push(['BI', 'BlockID', 'Active', 'Execution', 'MAR', 'AAR', 'BlockCode', 'BlockCodePRM', 'Price', ...periods, ...periods.map(() => 'OrderPeriodID')].join(';'));
+    L.push(['BI', 'BlockID', 'Active', 'Execution', 'MAR', 'AAR', 'BlockCode', 'BlockCodePRM', 'Price', ...periods, ...periods].join(';'));
     card.querySelectorAll('.brow').forEach(r => {
       const q = c => r.querySelector(c).value;
       const vols = [...r.querySelectorAll('.bv')].map(x => dec(x.value));
       const ids = vols.map(v => v === '' ? '' : nextId());
-      L.push(['BL', nextId(), q('.a'), dec(q('.ex')), dec(q('.mar')), q('.aar'), q('.code'), '', dec(q('.price')), ...vols, ...ids].join(';'));
+      const exec = q('.ex') !== '' ? dec(q('.ex')) : fmtSum(vols.reduce((s, v) => s + num(v), 0));
+      L.push(['BL', nextId(), q('.a'), exec, dec(q('.mar')), q('.aar'), q('.code'), '', dec(q('.price')), ...vols, ...ids].join(';'));
     });
   });
 
